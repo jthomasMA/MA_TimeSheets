@@ -802,17 +802,136 @@
   }
 
   // ================================================================ PEOPLE (supervisor)
+  // Creating logins / resetting passwords goes through the "manage-users"
+  // Supabase Edge Function, which holds the admin key server-side.
+  async function manageUsers(body) {
+    let res;
+    try { res = await sb.functions.invoke('manage-users', { body }); }
+    catch (e) { return { error: 'Could not reach the user-management function. ' + (e.message || '') }; }
+    const { data, error } = res;
+    if (!error) return data || {};
+    let msg = '';
+    try { const j = await error.context.json(); msg = j && j.error; } catch (_) { /* not JSON */ }
+    const status = error.context && error.context.status;
+    if (!msg && (status === 404 || /fetch|relay|not found/i.test(error.message || ''))) {
+      msg = 'User management isn\'t set up yet. Deploy the "manage-users" Edge Function (setup guide, Part 7).';
+    }
+    if (!msg && status === 401) {
+      msg = 'Supabase rejected the request. In the manage-users function settings, turn OFF "Verify JWT" (setup guide, Part 7).';
+    }
+    return { error: msg || error.message || 'Something went wrong.' };
+  }
+
+  function genPassword() {
+    const words = ['Timber', 'Rebar', 'Gravel', 'Beam', 'Brick', 'Crane', 'Level', 'Hammer', 'Anchor', 'Joist', 'Truss', 'Mortar'];
+    const a = new Uint32Array(2); crypto.getRandomValues(a);
+    return words[a[0] % words.length] + '-' + String(1000 + (a[1] % 9000));
+  }
+
+  function openModal(html, onMount) {
+    const back = document.createElement('div');
+    back.className = 'modal-back';
+    back.innerHTML = `<div class="card modal">${html}</div>`;
+    document.body.appendChild(back);
+    const close = () => back.remove();
+    back.addEventListener('click', e => { if (e.target === back || e.target.closest('[data-x]')) close(); });
+    onMount(back, close);
+    const first = back.querySelector('input'); if (first) first.focus();
+  }
+
+  function showLoginDetails(title, name, email, password) {
+    const text = `${CFG.COMPANY_NAME || ''} Timesheets\nSite: ${location.href.split('#')[0]}\nLogin: ${email}\nPassword: ${password}`;
+    openModal(`
+      <h2>${esc(title)}</h2>
+      <p class="muted small">Give these to ${esc(name)}. They can change the password with the <b>Password</b> button after signing in.
+      This password won't be shown again.</p>
+      <pre class="logincard">${esc(text)}</pre>
+      <div class="toolbar"><span class="grow"></span>
+        <button class="btn" data-copy>Copy</button><button class="btn primary" data-x>Done</button></div>`,
+      back => {
+        back.querySelector('[data-copy]').onclick = async () => {
+          try { await navigator.clipboard.writeText(text); toast('Copied.'); }
+          catch (_) { toast('Copy not available — select the text and copy it.', true); }
+        };
+      });
+  }
+
+  function openAddPerson(v) {
+    openModal(`
+      <form id="addPerson">
+        <h2>Add a person</h2>
+        <label class="field"><span>Full name</span><input name="full_name" required autocomplete="off"></label>
+        <label class="field"><span>Email / login</span><input name="email" type="email" required autocomplete="off" placeholder="jsmith@mabldg.com">
+          <span class="small muted" style="font-weight:400">No email? Make one up in a set format, e.g. jsmith@mabldg-crew.com.</span></label>
+        <label class="field"><span>Temporary password</span>
+          <div style="display:flex;gap:6px"><input name="password" required minlength="8" autocomplete="off">
+          <button type="button" class="btn" data-gen>New</button></div></label>
+        <label class="field"><span>Role</span><select name="role">
+          ${Object.entries(ROLE_LABEL).map(([k, l]) => `<option value="${k}">${l}</option>`).join('')}</select></label>
+        <div class="toolbar"><span class="grow"></span>
+          <button type="button" class="btn" data-x>Cancel</button>
+          <button class="btn primary" type="submit">Create login</button></div>
+      </form>`,
+      (back, close) => {
+        const f = back.querySelector('form');
+        f.password.value = genPassword();
+        back.querySelector('[data-gen]').onclick = () => { f.password.value = genPassword(); };
+        f.onsubmit = async e => {
+          e.preventDefault();
+          const btn = f.querySelector('[type=submit]');
+          btn.disabled = true; btn.textContent = 'Creating…';
+          const body = { action: 'create', full_name: f.full_name.value.trim(), email: f.email.value.trim(),
+            password: f.password.value, role: f.role.value };
+          const r = await manageUsers(body);
+          if (r.error) { toast(r.error, true); btn.disabled = false; btn.textContent = 'Create login'; return; }
+          close();
+          try { await loadRefs(); } catch (err) { fail(err); }
+          viewPeople(v);
+          showLoginDetails('Login created', body.full_name, r.email || body.email, body.password);
+        };
+      });
+  }
+
+  function openResetPassword(person) {
+    const name = person.full_name || person.email;
+    openModal(`
+      <form>
+        <h2>Reset password</h2>
+        <p class="muted small">Set a new password for <b>${esc(name)}</b>. Their old password stops working right away.</p>
+        <label class="field"><span>New password</span>
+          <div style="display:flex;gap:6px"><input name="password" required minlength="8" autocomplete="off">
+          <button type="button" class="btn" data-gen>New</button></div></label>
+        <div class="toolbar"><span class="grow"></span>
+          <button type="button" class="btn" data-x>Cancel</button>
+          <button class="btn primary" type="submit">Reset password</button></div>
+      </form>`,
+      (back, close) => {
+        const f = back.querySelector('form');
+        f.password.value = genPassword();
+        back.querySelector('[data-gen]').onclick = () => { f.password.value = genPassword(); };
+        f.onsubmit = async e => {
+          e.preventDefault();
+          const btn = f.querySelector('[type=submit]'); btn.disabled = true;
+          const r = await manageUsers({ action: 'reset_password', user_id: person.id, password: f.password.value });
+          if (r.error) { toast(r.error, true); btn.disabled = false; return; }
+          close();
+          showLoginDetails('Password reset', name, person.email, f.password.value);
+        };
+      });
+  }
+
   function viewPeople(v) {
     const counts = { employee: 0, foreman: 0, supervisor: 0 };
     state.profiles.forEach(p => { if (p.active) counts[p.role]++; });
     v.innerHTML = `
       <div class="card">
-        <h2>People</h2>
+        <div class="toolbar" style="margin:0 0 6px">
+          <h2 class="grow" style="margin:0">People</h2>
+          <button class="btn primary" id="addPersonBtn">+ Add person</button>
+        </div>
         <p class="muted small" style="margin:0">
           ${counts.employee} employees · ${counts.foreman} foremen · ${counts.supervisor} supervisors active.
-          To add someone, create their login in Supabase (<b>Authentication → Users → Add user</b>, tick
-          <b>Auto Confirm User</b>). They'll show up here as an Employee; set their name and role below.
-          Unticking <b>Active</b> blocks them from the app but keeps their past hours.</p>
+          Unticking <b>Active</b> blocks someone from the app but keeps their past hours.</p>
       </div>
       <div class="card table-wrap"><table>
         <thead><tr><th>Name</th><th>Email / login</th><th>Role</th><th>Active</th><th></th></tr></thead>
@@ -824,8 +943,14 @@
             <td><select data-f="role" ${self ? 'disabled title="You can\'t change your own role"' : ''} aria-label="Role">
               ${Object.entries(ROLE_LABEL).map(([k, l]) => `<option value="${k}" ${k === p.role ? 'selected' : ''}>${l}</option>`).join('')}</select></td>
             <td><input type="checkbox" data-f="active" ${p.active ? 'checked' : ''} ${self ? 'disabled' : ''} aria-label="Active"></td>
-            <td><button class="btn small primary" data-save>Save</button></td></tr>`;
+            <td style="white-space:nowrap"><button class="btn small primary" data-save>Save</button>
+              <button class="btn small" data-reset>Reset password</button></td></tr>`;
         }).join('')}</tbody></table></div>`;
+    v.querySelector('#addPersonBtn').onclick = () => openAddPerson(v);
+    v.querySelectorAll('[data-reset]').forEach(b => b.onclick = () => {
+      const p = profileById(b.closest('[data-person]').dataset.person);
+      if (p) openResetPassword(p);
+    });
     v.querySelectorAll('[data-save]').forEach(b => b.onclick = async () => {
       const tr = b.closest('[data-person]'); const id = tr.dataset.person;
       const upd = { full_name: tr.querySelector('[data-f="full_name"]').value.trim() };
