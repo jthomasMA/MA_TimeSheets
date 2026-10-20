@@ -5,7 +5,7 @@
 //  the database are what protect the data.)
 // =====================================================================
 window.APP_CONFIG = {
-  SUPABASE_URL: 'https://lvrmlrasfddmoqladknp.supabase',
+  SUPABASE_URL: 'https://lvrmlrasfddmoqladknp.supabase.co',
   SUPABASE_ANON_KEY: 'sb_publishable_4mT_vCEzIGe1TJKn0lNC1g_QvWRnO63',
 
   COMPANY_NAME: 'M-A Building',
