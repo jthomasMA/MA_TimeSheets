@@ -12,6 +12,11 @@
   const COST_CODES = Array.isArray(CFG.COST_CODES) ? CFG.COST_CODES : [];
   const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
   const ROLE_LABEL = { employee: 'Employee', foreman: 'Foreman', supervisor: 'Supervisor' };
+  // Daily checkboxes shown under each day's hours. key = grid cell field, col = database column.
+  const FLAGS = [
+    { key: 'swing', col: 'swing_pay', label: 'Swing-Pay' },
+    { key: 'gas', col: 'gas', label: 'Gas' },
+  ];
 
   const $app = document.getElementById('app');
   let sb = null;
@@ -280,7 +285,7 @@
         r = { id: uid(), employee_id: e.employee_id, jobsite_id: e.jobsite_id, cost_code: e.cost_code, notes: e.notes || '', cells: {} };
         byKey.set(k, r); rows.push(r);
       }
-      r.cells[e.work_date] = { hours: num(e.hours), status: e.status, id: e.id };
+      r.cells[e.work_date] = { hours: num(e.hours), status: e.status, id: e.id, swing: !!e.swing_pay, gas: !!e.gas };
       if (!r.notes && e.notes) r.notes = e.notes;
     }
     rows.sort((a, b) => mode === 'crew'
@@ -338,6 +343,14 @@
               class="${cls}" value="${c.hours ? fmtH(c.hours) : ''}" ${c.status === 'approved' ? 'disabled' : ''}
               aria-label="${DAY_NAMES[dow]} ${fmtShort(d)} hours"></label>`;
         }).join('')}</div>
+        ${FLAGS.map(f => `<div class="flaglabel">${f.label}</div>
+        <div class="days">${g.dates.map(d => {
+          const c = r.cells[d] || {};
+          const dow = parseISO(d).getDay();
+          return `<label class="flag"><input type="checkbox" data-flag="${f.key}" data-fd="${d}"
+            ${c[f.key] ? 'checked' : ''} ${c.status === 'approved' ? 'disabled' : ''}
+            aria-label="${f.label} ${DAY_NAMES[dow]} ${fmtShort(d)}"></label>`;
+        }).join('')}</div>`).join('')}
         <div class="row-foot">
           <input data-f="notes" value="${esc(r.notes)}" placeholder="Notes (optional)" ${locked ? 'disabled' : ''} aria-label="Notes">
           ${statuses.map(s => `<span class="badge ${s}">${s}</span>`).join('')}
@@ -352,7 +365,7 @@
       ${rowsHTML || '<div class="card muted">No hours yet for this week.</div>'}
       <div class="card totals-card">
         <div class="days" data-daytotals></div>
-        <div class="row-foot"><span class="grow muted small">Daily totals</span><span class="grow"></span><span class="row-total" data-weektotal></span></div>
+        <div class="row-foot"><span class="grow muted small">Daily totals<span data-flagtotals></span></span><span class="row-total" data-weektotal></span></div>
       </div>`;
     updateTotals(container);
   }
@@ -363,6 +376,15 @@
     const week = dayTotals.reduce((a, b) => a + b, 0);
     const dt = container.querySelector('[data-daytotals]');
     if (dt) dt.innerHTML = dayTotals.map(t => `<div>${t ? fmtH(t) : '–'}</div>`).join('');
+    const ft = container.querySelector('[data-flagtotals]');
+    if (ft) {
+      // Days ticked, counted once per person per day
+      ft.textContent = FLAGS.map(f => {
+        const days = new Set();
+        g.rows.forEach(r => g.dates.forEach(d => { if (r.cells[d] && r.cells[d][f.key]) days.add(r.employee_id + '|' + d); }));
+        return ` · ${f.label}: ${days.size} day${days.size === 1 ? '' : 's'}`;
+      }).join('');
+    }
     const wt = container.querySelector('[data-weektotal]');
     if (wt) {
       const otNote = g.mode === 'mine' && week > OT ? ` <span class="badge ot">${fmtH(week - OT)} OT</span>` : '';
@@ -393,7 +415,17 @@
       updateTotals(container);
     });
     container.addEventListener('change', e => {
-      if (e.target.tagName === 'SELECT') e.target.dispatchEvent(new Event('input', { bubbles: true }));
+      if (e.target.tagName === 'SELECT') { e.target.dispatchEvent(new Event('input', { bubbles: true })); return; }
+      if (e.target.dataset.flag) {
+        const g = state.grid; if (!g) return;
+        const card = e.target.closest('[data-row]');
+        const r = card && g.rows.find(x => x.id === card.dataset.row); if (!r) return;
+        const d = e.target.dataset.fd;
+        r.cells[d] = r.cells[d] || {};
+        r.cells[d][e.target.dataset.flag] = e.target.checked;
+        g.dirty = true;
+        updateTotals(container);
+      }
     });
     container.addEventListener('click', e => {
       const btn = e.target.closest('[data-remove]'); if (!btn) return;
@@ -427,10 +459,16 @@
       }
       seen.add(rk);
       for (const d of g.dates) {
-        const h = num(r.cells[d] && r.cells[d].hours);
+        const c = r.cells[d] || {};
+        const h = num(c.hours);
         if (h < 0 || h > 24) { errors.push(`Hours must be between 0 and 24 (${fmtShort(d)}).`); continue; }
+        if (h === 0 && (c.swing || c.gas)) {
+          const who = g.mode === 'crew' ? personName(r.employee_id) + ': ' : '';
+          errors.push(`${who}${FLAGS.filter(f => c[f.key]).map(f => f.label).join(' and ')} is checked on ${DAY_NAMES[parseISO(d).getDay()]} ${fmtShort(d)}, but there are no hours that day.`);
+          continue;
+        }
         if (h > 0) {
-          desired.set(rk + '|' + d, { employee_id: r.employee_id, jobsite_id: r.jobsite_id, cost_code: r.cost_code, work_date: d, hours: h, notes: r.notes.trim() });
+          desired.set(rk + '|' + d, { employee_id: r.employee_id, jobsite_id: r.jobsite_id, cost_code: r.cost_code, work_date: d, hours: h, notes: r.notes.trim(), swing_pay: !!c.swing, gas: !!c.gas });
           const pk = r.employee_id + '|' + d;
           perPersonDay[pk] = (perPersonDay[pk] || 0) + h;
         }
@@ -446,7 +484,8 @@
     for (const [k, v] of desired) {
       const ex = loadedByKey.get(k);
       if (ex && ex.status === 'approved') continue;
-      if (!ex || num(ex.hours) !== v.hours || (ex.notes || '') !== v.notes || ex.status === 'rejected') {
+      if (!ex || num(ex.hours) !== v.hours || (ex.notes || '') !== v.notes || ex.status === 'rejected' ||
+          !!ex.swing_pay !== v.swing_pay || !!ex.gas !== v.gas) {
         upserts.push({ ...v, status: 'submitted' });
       }
     }
@@ -535,7 +574,7 @@
       <div class="save-bar">
         <button class="btn" id="addRow">+ Add employee</button>
         <button class="btn" id="lastCrew" title="Add everyone who worked this jobsite last week">Add last week's crew</button>
-        <button class="btn" id="fillDown" title="Copy the first row's hours to rows that are still empty">Copy row 1 hours to empty rows</button>
+        <button class="btn" id="fillDown" title="Copy the first row's hours and checkboxes to rows that are still empty">Copy row 1 to empty rows</button>
         <span class="grow" id="dirtyInd"></span>
         <button class="btn primary" id="save">Save crew hours</button>
       </div>`;
@@ -580,7 +619,10 @@
       let n = 0;
       for (const r of g.rows.slice(1)) {
         if (rowTotal(r) > 0 || rowLocked(r)) continue;
-        for (const d of g.dates) if (src.cells[d] && src.cells[d].hours) r.cells[d] = { hours: src.cells[d].hours };
+        for (const d of g.dates) {
+          const s = src.cells[d];
+          if (s && s.hours) r.cells[d] = { hours: s.hours, swing: !!s.swing, gas: !!s.gas };
+        }
         n++;
       }
       if (n) g.dirty = true;
@@ -629,6 +671,14 @@
     // Overtime is based on the person's full week, regardless of filters.
     const weekTotals = {};
     for (const e of data) weekTotals[e.employee_id] = (weekTotals[e.employee_id] || 0) + num(e.hours);
+    // Swing-Pay / Gas: number of distinct days each person has them checked
+    const flagDays = {};
+    for (const f of FLAGS) {
+      const sets = {};
+      for (const e of data) if (e[f.col]) (sets[e.employee_id] = sets[e.employee_id] || new Set()).add(e.work_date);
+      flagDays[f.col] = id => (sets[id] ? sets[id].size : 0);
+    }
+    const check = on => (on ? '<span class="tick" aria-label="yes">✓</span>' : '');
     let entries = R.status ? data.filter(e => e.status === R.status) : data;
     entries.sort((a, b) => personName(a.employee_id).localeCompare(personName(b.employee_id)) ||
       a.work_date.localeCompare(b.work_date) || siteName(a.jobsite_id).localeCompare(siteName(b.jobsite_id)));
@@ -647,7 +697,7 @@
     const tbl = v.querySelector('#tbl');
     if (!entries.length) { tbl.innerHTML = '<p class="muted">No hours match these filters.</p>'; }
     else {
-      let html = `<table><thead><tr><th></th><th>Date</th><th>Jobsite</th><th>Cost code</th><th class="num">Hours</th><th>Status</th><th>Entered by</th><th>Notes</th></tr></thead><tbody>`;
+      let html = `<table><thead><tr><th></th><th>Date</th><th>Jobsite</th><th>Cost code</th><th class="num">Hours</th>${FLAGS.map(f => `<th class="flagcol">${f.label}</th>`).join('')}<th>Status</th><th>Entered by</th><th>Notes</th></tr></thead><tbody>`;
       let cur = null;
       for (const e of entries) {
         if (e.employee_id !== cur) {
@@ -657,6 +707,7 @@
           html += `<tr class="group"><td><input type="checkbox" data-group="${cur}" aria-label="Select all for ${esc(personName(cur))}"></td>
             <td colspan="3">${esc(personName(cur))}</td>
             <td class="num">${fmtH(shown)}</td>
+            ${FLAGS.map(f => { const n = flagDays[f.col](cur); return `<td class="flagcol small">${n ? n + ' day' + (n === 1 ? '' : 's') : ''}</td>`; }).join('')}
             <td colspan="3">${R.site || R.status ? `<span class="muted small">week total ${fmtH(wk)} h</span> ` : ''}${wk > OT ? `<span class="badge ot">${fmtH(wk - OT)} h overtime</span>` : ''}</td></tr>`;
         }
         const d = parseISO(e.work_date);
@@ -664,12 +715,13 @@
           <td>${DAY_NAMES[d.getDay()]} ${fmtShort(e.work_date)}</td>
           <td>${esc(siteName(e.jobsite_id))}</td><td>${esc(e.cost_code)}</td>
           <td class="num">${fmtH(num(e.hours))}</td>
+          ${FLAGS.map(f => `<td class="flagcol">${check(e[f.col])}</td>`).join('')}
           <td><span class="badge ${e.status}">${e.status === 'rejected' ? 'sent back' : e.status}</span></td>
           <td class="small">${e.entered_by && e.entered_by !== e.employee_id ? esc(personName(e.entered_by)) : '<span class="muted">self</span>'}</td>
           <td class="small">${esc(e.notes)}</td></tr>`;
       }
       const total = entries.reduce((s, e) => s + num(e.hours), 0);
-      html += `</tbody><tfoot><tr><td></td><td colspan="3"><b>Total</b></td><td class="num"><b>${fmtH(total)}</b></td><td colspan="3"></td></tr></tfoot></table>`;
+      html += `</tbody><tfoot><tr><td></td><td colspan="3"><b>Total</b></td><td class="num"><b>${fmtH(total)}</b></td>${FLAGS.map(() => '<td></td>').join('')}<td colspan="3"></td></tr></tfoot></table>`;
       tbl.innerHTML = html;
     }
 
@@ -703,34 +755,40 @@
 
     const tag = dates[0];
     v.querySelector('#csvDetail').onclick = () => {
-      const rows = [['Employee', 'Email', 'Date', 'Day', 'Job #', 'Jobsite', 'Cost code', 'Hours', 'Status', 'Entered by', 'Notes']];
+      const rows = [['Employee', 'Email', 'Date', 'Day', 'Job #', 'Jobsite', 'Cost code', 'Hours', ...FLAGS.map(f => f.label), 'Status', 'Entered by', 'Notes']];
       for (const e of R.entries) {
         const s = siteById(e.jobsite_id) || {}; const p = profileById(e.employee_id) || {};
         rows.push([personName(e.employee_id), p.email, e.work_date, DAY_NAMES[parseISO(e.work_date).getDay()],
-          s.job_number, s.name, e.cost_code, num(e.hours), e.status, e.entered_by ? personName(e.entered_by) : '', e.notes]);
+          s.job_number, s.name, e.cost_code, num(e.hours), ...FLAGS.map(f => (e[f.col] ? 'Yes' : '')),
+          e.status, e.entered_by ? personName(e.entered_by) : '', e.notes]);
       }
       downloadCSV(`timesheets-detail-${tag}.csv`, rows);
     };
     v.querySelector('#csvSummary').onclick = () => {
       // One line per employee + jobsite + cost code, with each day as a column,
       // plus each employee's weekly regular / overtime split.
-      const head = ['Employee', 'Job #', 'Jobsite', 'Cost code', ...dates.map(d => DAY_NAMES[parseISO(d).getDay()] + ' ' + fmtShort(d)), 'Total', 'Employee week total', 'Regular', 'Overtime'];
+      // Swing-Pay / Gas show as day counts per line and per employee for the week.
+      const head = ['Employee', 'Job #', 'Jobsite', 'Cost code', ...dates.map(d => DAY_NAMES[parseISO(d).getDay()] + ' ' + fmtShort(d)), 'Total',
+        ...FLAGS.map(f => f.label + ' days'), 'Employee week total', 'Regular', 'Overtime', ...FLAGS.map(f => 'Employee ' + f.label + ' days')];
       const groups = new Map();
       for (const e of R.entries) {
         const k = e.employee_id + '|' + e.jobsite_id + '|' + e.cost_code;
-        if (!groups.has(k)) groups.set(k, { e, days: {} });
+        if (!groups.has(k)) groups.set(k, { e, days: {}, flags: Object.fromEntries(FLAGS.map(f => [f.col, new Set()])) });
         const gg = groups.get(k); gg.days[e.work_date] = (gg.days[e.work_date] || 0) + num(e.hours);
+        FLAGS.forEach(f => { if (e[f.col]) gg.flags[f.col].add(e.work_date); });
       }
       const rows = [head];
       const lines = [...groups.values()].sort((a, b) => personName(a.e.employee_id).localeCompare(personName(b.e.employee_id)));
       let lastEmp = null;
-      for (const { e, days } of lines) {
+      for (const { e, days, flags } of lines) {
         const s = siteById(e.jobsite_id) || {};
         const tot = Object.values(days).reduce((x, y) => x + y, 0);
         const wk = weekTotals[e.employee_id] || 0;
         const first = e.employee_id !== lastEmp; lastEmp = e.employee_id;
         rows.push([personName(e.employee_id), s.job_number, s.name, e.cost_code, ...dates.map(d => days[d] || ''), fmtH(tot),
-          first ? fmtH(wk) : '', first ? fmtH(Math.min(wk, OT)) : '', first ? fmtH(Math.max(0, wk - OT)) : '']);
+          ...FLAGS.map(f => flags[f.col].size || ''),
+          first ? fmtH(wk) : '', first ? fmtH(Math.min(wk, OT)) : '', first ? fmtH(Math.max(0, wk - OT)) : '',
+          ...FLAGS.map(f => (first ? flagDays[f.col](e.employee_id) : ''))]);
       }
       downloadCSV(`timesheets-summary-${tag}.csv`, rows);
     };
