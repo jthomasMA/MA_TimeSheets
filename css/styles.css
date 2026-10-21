@@ -142,6 +142,13 @@ label.field > span { display: block; font-size: .85rem; font-weight: 600; margin
 .day input.approved { background: var(--ok-bg); border-color: transparent; color: var(--ok); font-weight: 700; }
 .day input.rejected { background: var(--bad-bg); border-color: var(--bad); }
 .day.weekend .dlabel b { color: var(--muted); }
+.flaglabel { font-size: .72rem; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; margin: 8px 0 2px; }
+.flag { display: flex; justify-content: center; align-items: center; min-height: 36px; border-radius: 8px; background: var(--surface-2); cursor: pointer; }
+.flag input { width: 22px; height: 22px; cursor: pointer; }
+.flag:has(input:checked) { background: var(--warn-bg); }
+.flag:has(input:disabled) { cursor: default; opacity: .7; }
+th.flagcol, td.flagcol { text-align: center; }
+.tick { color: var(--ok); font-weight: 800; }
 .row-foot { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
 .row-foot input { flex: 1; }
 .row-total { font-weight: 700; min-width: 70px; text-align: right; font-variant-numeric: tabular-nums; }
