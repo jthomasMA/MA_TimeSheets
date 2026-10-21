@@ -131,13 +131,15 @@ Send everyone the website address. To make it look like an app on their phone:
 2. Type hours under each day.
 3. Tap **Save hours**.
 
+Under each day's hours, tick **Swing-Pay** and/or **Gas** if they apply that day. A box can only be ticked on a day that has hours.
+
 To log time on two jobsites in one day, use **+ Add jobsite**. **Copy last week's jobsites** pre-fills the rows.
 
 **Foremen, on Crew Hours:**
 
 1. Choose the jobsite.
 2. Tap **Add last week's crew**, or add people one at a time.
-3. Enter the first person's hours, then tap **Copy row 1 hours to empty rows** to fill the rest of the crew. Adjust anyone who differs.
+3. Enter the first person's hours and Swing-Pay/Gas boxes, then tap **Copy row 1 to empty rows** to fill the rest of the crew. Adjust anyone who differs.
 4. Tap **Save crew hours**.
 
 **Supervisors, on Review & Export:**
@@ -145,8 +147,8 @@ To log time on two jobsites in one day, use **+ Add jobsite**. **Copy last week'
 1. Check the yellow box, which lists who hasn't entered any hours yet.
 2. Click **Select all waiting**, then **Approve selected**. Use **Send back selected** for anything that needs fixing.
 3. Download the payroll file:
-   - **Export payroll summary** gives one line per employee, jobsite and cost code, with each day's hours, the weekly total, and regular and overtime split at 40 hours.
-   - **Export detail** gives one line per entry.
+   - **Export payroll summary** gives one line per employee, jobsite and cost code, with each day's hours, the weekly total, and regular and overtime split at 40 hours. It also shows the number of Swing-Pay and Gas days per line and per employee for the week. A day counts once even if the person worked two jobsites that day.
+   - **Export detail** gives one line per entry, with Yes in the Swing-Pay and Gas columns for the days they apply.
 
 ---
 
