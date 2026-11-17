@@ -97,6 +97,8 @@ main { max-width: 1100px; margin: 0 auto; padding: 16px; }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 .btn.ok { background: var(--ok); border-color: var(--ok); color: #fff; }
 .btn.danger { color: var(--bad); }
+.btn.danger-solid { background: var(--bad); border-color: var(--bad); color: #fff; }
+details.card summary { cursor: pointer; }
 .btn.small { min-height: 32px; padding: 4px 10px; font-size: .85rem; }
 .btn.icon { min-width: 40px; padding: 8px; }
 
@@ -128,6 +130,7 @@ label.field > span { display: block; font-size: .85rem; font-weight: 600; margin
 }
 .notice { padding: 10px 14px; border-radius: 8px; margin-bottom: 12px; background: var(--surface-2); border: 1px solid var(--border); }
 .notice.warn { background: var(--warn-bg); border-color: transparent; color: var(--warn); }
+.notice.info { background: var(--surface-2); border-color: var(--border); border-left: 4px solid var(--focus); }
 .notice.bad { background: var(--bad-bg); border-color: transparent; color: var(--bad); }
 
 /* ---------- Hours grid (card per row) ---------- */

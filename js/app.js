@@ -6,6 +6,10 @@
 (function () {
   'use strict';
 
+  // Bump this with every update so it's easy to confirm which version is live
+  // (shown on the sign-in screen and under the Sign out button).
+  const APP_VERSION = '8';
+
   const CFG = window.APP_CONFIG || {};
   const WSD = Number.isInteger(CFG.WEEK_START_DAY) ? CFG.WEEK_START_DAY : 1;
   const OT = Number(CFG.OVERTIME_THRESHOLD) || 40;
@@ -80,7 +84,7 @@
   const empNo = id => { const p = profileById(id); return (p && p.employee_number) || ''; };
   // Friendly text for the duplicate-employee-number database error
   const dupNoMsg = (err, no) => (err && err.code === '23505' ? `Employee # ${no} is already used by someone else.` : null);
-  const noTaken = (no, exceptId) => no && state.profiles.find(p => p.id !== exceptId && (p.employee_number || '') === no);
+  const noTaken = (no, exceptId) => no && state.profiles.find(p => p.id !== exceptId && !p.removed_at && (p.employee_number || '') === no);
   const siteName = id => { const s = siteById(id); return s ? (s.job_number ? s.job_number + ' – ' : '') + s.name : '(unknown)'; };
   function myForemanSites() {
     if (isSupervisor()) return state.jobsites.filter(s => s.active);
@@ -166,6 +170,7 @@
       <label class="field"><span>Password</span><input type="password" name="password" autocomplete="current-password" required></label>
       <button class="btn primary" type="submit">Sign in</button>
       <p class="small" style="text-align:center;margin-top:12px"><a href="#" id="forgot">Forgot password?</a></p>
+      <p class="muted small" style="text-align:center;margin:4px 0 0">Version ${APP_VERSION}</p>
     </form></div>`;
     const form = document.getElementById('loginForm');
     form.onsubmit = async e => {
@@ -237,6 +242,7 @@
         <div class="user">
           <button class="btn small" id="pwBtn">Password</button>
           <button class="btn small" id="outBtn">Sign out</button>
+          <span class="small" style="opacity:.7" title="App version">v${APP_VERSION}</span>
         </div>
       </header>
       <nav class="tabs">${tabs.map(([k, l]) =>
@@ -927,6 +933,7 @@
     if (!msg && status === 401) {
       msg = 'Supabase rejected the request. In the manage-users function settings, turn OFF "Verify JWT" (setup guide, Part 7).';
     }
+    if (msg === 'Unknown action.') msg = 'The manage-users function needs updating for this feature. Paste in the new index.ts (update 8 instructions).';
     return { error: msg || error.message || 'Something went wrong.' };
   }
 
@@ -1036,9 +1043,42 @@
       });
   }
 
+  async function openDeletePerson(v, person) {
+    const name = person.full_name || person.email;
+    const { count, error } = await sb.from('time_entries').select('id', { count: 'exact', head: true }).eq('employee_id', person.id);
+    if (error) return fail(error);
+    const hasHours = (count || 0) > 0;
+    openModal(`
+      <h2>Delete ${esc(name)}?</h2>
+      <p>Their login will be removed for good. They won't be able to sign in again.</p>
+      ${hasHours
+        ? `<div class="notice">They have <b>${count}</b> day${count === 1 ? '' : 's'} of hours on record. Those stay in your reports and exports
+           under their name${person.employee_number ? ' and employee #' + esc(person.employee_number) : ''}, and they'll be listed under
+           <b>Removed people</b> at the bottom of this page.</div>`
+        : '<div class="notice">They have no hours on record, so they\'ll be erased completely.</div>'}
+      <p class="muted small">This can't be undone. If they come back, add them again as a new person.
+      If they might return, untick <b>Active</b> instead.</p>
+      <div class="toolbar"><span class="grow"></span>
+        <button type="button" class="btn" data-x>Cancel</button>
+        <button type="button" class="btn danger-solid" data-confirm>Delete permanently</button></div>`,
+      (back, close) => {
+        back.querySelector('[data-confirm]').onclick = async e => {
+          e.target.disabled = true; e.target.textContent = 'Deleting…';
+          const r = await manageUsers({ action: 'delete_user', user_id: person.id });
+          if (r.error) { toast(r.error, true); e.target.disabled = false; e.target.textContent = 'Delete permanently'; return; }
+          close();
+          try { await loadRefs(); } catch (err) { fail(err); }
+          viewPeople(v);
+          toast(r.mode === 'removed' ? `${name} deleted. Their past hours are kept.` : `${name} deleted.`);
+        };
+      });
+  }
+
   function viewPeople(v) {
     const counts = { employee: 0, foreman: 0, supervisor: 0 };
-    state.profiles.forEach(p => { if (p.active) counts[p.role]++; });
+    const current = state.profiles.filter(p => !p.removed_at);
+    const removed = state.profiles.filter(p => p.removed_at);
+    current.forEach(p => { if (p.active) counts[p.role]++; });
     v.innerHTML = `
       <div class="card">
         <div class="toolbar" style="margin:0 0 6px">
@@ -1047,11 +1087,12 @@
         </div>
         <p class="muted small" style="margin:0">
           ${counts.employee} employees · ${counts.foreman} foremen · ${counts.supervisor} supervisors active.
-          Unticking <b>Active</b> blocks someone from the app but keeps their past hours.</p>
+          Unticking <b>Active</b> blocks someone from the app but keeps their past hours.
+          <b>Delete</b> is for people who won't be returning.</p>
       </div>
       <div class="card table-wrap"><table>
         <thead><tr><th>Name</th><th>Employee #</th><th>Email / login</th><th>Role</th><th>Active</th><th></th></tr></thead>
-        <tbody>${state.profiles.map(p => {
+        <tbody>${current.map(p => {
           const self = p.id === state.me.id;
           return `<tr data-person="${p.id}">
             <td><input data-f="full_name" value="${esc(p.full_name)}" aria-label="Name"></td>
@@ -1061,8 +1102,22 @@
               ${Object.entries(ROLE_LABEL).map(([k, l]) => `<option value="${k}" ${k === p.role ? 'selected' : ''}>${l}</option>`).join('')}</select></td>
             <td><input type="checkbox" data-f="active" ${p.active ? 'checked' : ''} ${self ? 'disabled' : ''} aria-label="Active"></td>
             <td style="white-space:nowrap"><button class="btn small primary" data-save>Save</button>
-              <button class="btn small" data-reset>Reset password</button></td></tr>`;
-        }).join('')}</tbody></table></div>`;
+              <button class="btn small" data-reset>Reset password</button>
+              ${self ? '' : '<button class="btn small danger" data-delete>Delete</button>'}</td></tr>`;
+        }).join('')}</tbody></table></div>
+      ${removed.length ? `<details class="card"><summary><b>Removed people (${removed.length})</b>
+          <span class="muted small">— can't sign in; their past hours stay in reports</span></summary>
+        <div class="table-wrap" style="margin-top:10px"><table>
+          <thead><tr><th>Name</th><th>Employee #</th><th>Email / login</th><th>Deleted</th></tr></thead>
+          <tbody>${removed.slice().sort((a, b) => (b.removed_at || '').localeCompare(a.removed_at || '')).map(p => `<tr>
+            <td>${esc(p.full_name || p.email)}</td><td>${esc(p.employee_number || '')}</td>
+            <td class="small">${esc(p.email)}</td>
+            <td class="small">${esc(new Date(p.removed_at).toLocaleDateString())}</td></tr>`).join('')}</tbody>
+        </table></div></details>` : ''}`;
+    v.querySelectorAll('[data-delete]').forEach(b => b.onclick = () => {
+      const p = profileById(b.closest('[data-person]').dataset.person);
+      if (p) openDeletePerson(v, p);
+    });
     v.querySelector('#addPersonBtn').onclick = () => openAddPerson(v);
     v.querySelectorAll('[data-reset]').forEach(b => b.onclick = () => {
       const p = profileById(b.closest('[data-person]').dataset.person);

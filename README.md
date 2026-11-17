@@ -106,11 +106,12 @@ Open the address and sign in. You should see five tabs: My Hours, Crew Hours, Re
 
 1. **Jobsites tab:** add each active job with its job number and name.
 2. **People tab → + Add person.** This button needs Part 7 done first, which is a one-time, 5-minute step.
-   - Enter the person's name and email/login, and pick their role.
+   - Enter the person's name, employee # (optional), and email/login, and pick their role.
    - A temporary password is filled in for you.
    - Click **Create login**. The app shows the login details to text or hand to the person, with a **Copy** button.
    - **No company email?** Make one up in a consistent format, such as `jsmith@mabldg-crew.com`. It only has to look like an email. Those people can't use "Forgot password", so you use **Reset password** on the People tab instead.
-3. **Jobsites tab:** tick the foremen who run each jobsite and click **Save**. A foreman can enter crew hours only on jobsites they are ticked on.
+3. **Employee numbers** can also be added or changed later in the **Employee #** column on the People tab. Click **Save** on that row. Only supervisors can change them, each number can belong to only one person, and they print on both exports.
+4. **Jobsites tab:** tick the foremen who run each jobsite and click **Save**. A foreman can enter crew hours only on jobsites they are ticked on.
 
 > If you'd rather skip Part 7, you can still add people in Supabase: go to **Authentication → Users → Add user**, and tick **Auto Confirm User**. They then appear on the People tab as an Employee, where you set their name and role.
 
@@ -147,14 +148,26 @@ To log time on two jobsites in one day, use **+ Add jobsite**. **Copy last week'
 1. Check the yellow box, which lists who hasn't entered any hours yet.
 2. Click **Select all waiting**, then **Approve selected**. Use **Send back selected** for anything that needs fixing.
 3. Download the payroll file:
-   - **Export payroll summary** gives one line per employee, jobsite and cost code, with each day's hours, the weekly total, and regular and overtime split at 40 hours. It also shows the number of Swing-Pay and Gas days per line and per employee for the week. A day counts once even if the person worked two jobsites that day.
-   - **Export detail** gives one line per entry, with Yes in the Swing-Pay and Gas columns for the days they apply.
+   - **Export payroll summary** is grouped by job, in job-number order.
+     - Each job has one line per employee and cost code, with each day's hours, a total, Swing-Pay and Gas day counts, and their notes. If the notes differ across days, they're joined with " | ".
+     - Each job ends with a **JOB TOTAL** line and a blank line.
+     - Someone who worked several jobs that week appears separately under each job.
+     - At the bottom, **EMPLOYEE WEEKLY TOTALS** gives one line per person: employee #, week total, regular and overtime split at 40, Swing-Pay and Gas days (each day counted once even if they worked two jobs), and the jobs they worked.
+   - **Export detail** gives one line per entry, sorted by job, then employee, then date, with Yes in the Swing-Pay and Gas columns for the days they apply. It has no extra total or blank lines, so it stays easy to filter in Excel.
 
 ---
 
 ## Part 6: Common admin tasks
 
-**Someone leaves.** On the People tab, untick **Active** and click Save. Their past hours are kept, and they can no longer log in. Don't delete them in Supabase: the database blocks deleting anyone who has hours on record, to protect payroll history.
+**Someone leaves.** There are two options on the **People** tab:
+
+- **Might come back** (seasonal, laid off): untick **Active** and click Save. They can't sign in, nothing is deleted, and you can tick Active again any time.
+- **Won't be returning:** click **Delete**. Their login is removed for good.
+  - **Past hours stay** in reports and exports under their name and employee #. They move to **Removed people** at the bottom of the People tab.
+  - **People who never logged any hours**, such as a login made by mistake, are erased completely.
+  - Deleting can't be undone. If they do return, add them again as a new person. Their old employee # can be reused.
+  - Payroll records generally need to be kept for several years, which is why hours are never deleted.
+  - Deleting needs the updated manage-users function (Part 7).
 
 **Reset someone's password.** Go to the **People** tab, click **Reset password** on their row, and give them the new password shown. This needs Part 7.
 
