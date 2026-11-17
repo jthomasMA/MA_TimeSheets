@@ -77,6 +77,10 @@
   const profileById = id => state.profiles.find(p => p.id === id);
   const siteById = id => state.jobsites.find(s => s.id === id);
   const personName = id => { const p = profileById(id); return p ? (p.full_name || p.email) : '(unknown)'; };
+  const empNo = id => { const p = profileById(id); return (p && p.employee_number) || ''; };
+  // Friendly text for the duplicate-employee-number database error
+  const dupNoMsg = (err, no) => (err && err.code === '23505' ? `Employee # ${no} is already used by someone else.` : null);
+  const noTaken = (no, exceptId) => no && state.profiles.find(p => p.id !== exceptId && (p.employee_number || '') === no);
   const siteName = id => { const s = siteById(id); return s ? (s.job_number ? s.job_number + ' – ' : '') + s.name : '(unknown)'; };
   function myForemanSites() {
     if (isSupervisor()) return state.jobsites.filter(s => s.active);
@@ -228,7 +232,7 @@
     $app.innerHTML = `
       <header class="topbar">
         <div class="brand">${esc(CFG.COMPANY_NAME || '')} Timesheets
-          <span>${esc(state.me.full_name || state.me.email)} · ${ROLE_LABEL[state.me.role]}</span></div>
+          <span>${esc(state.me.full_name || state.me.email)}${state.me.employee_number ? ' · #' + esc(state.me.employee_number) : ''} · ${ROLE_LABEL[state.me.role]}</span></div>
         <div class="user">
           <button class="btn small" id="pwBtn">Password</button>
           <button class="btn small" id="outBtn">Sign out</button>
@@ -324,7 +328,7 @@
         picker = `<select data-f="jobsite_id" ${locked ? 'disabled' : ''} aria-label="Jobsite">${selectOpts(list, r.jobsite_id, s => siteName(s.id), 'Select jobsite…')}</select>`;
       } else {
         const list = people.some(p => p.id === r.employee_id) || !r.employee_id ? people : people.concat(profileById(r.employee_id) || []);
-        picker = `<select data-f="employee_id" ${locked ? 'disabled' : ''} aria-label="Employee">${selectOpts(list, r.employee_id, p => p.full_name || p.email, 'Select employee…')}</select>`;
+        picker = `<select data-f="employee_id" ${locked ? 'disabled' : ''} aria-label="Employee">${selectOpts(list, r.employee_id, p => (p.full_name || p.email) + (p.employee_number ? ' (#' + p.employee_number + ')' : ''), 'Select employee…')}</select>`;
       }
       const statuses = [...new Set(Object.values(r.cells).filter(c => c.status && num(c.hours) > 0).map(c => c.status))];
       return `<div class="card row-card" data-row="${r.id}">
@@ -689,9 +693,18 @@
     if (!R.site) {
       const withHours = new Set(data.map(e => e.employee_id));
       const missing = state.profiles.filter(p => p.active && p.role !== 'supervisor' && !withHours.has(p.id));
-      missingEl.innerHTML = missing.length
+      // Heads-up only: people with some hours but under a full week. Doesn't block anything.
+      const short = state.profiles
+        .filter(p => p.active && p.role !== 'supervisor' && withHours.has(p.id) && (weekTotals[p.id] || 0) < OT)
+        .sort((a, b) => (weekTotals[a.id] || 0) - (weekTotals[b.id] || 0));
+      missingEl.innerHTML = (missing.length
         ? `<div class="notice warn"><b>No hours entered yet (${missing.length}):</b> ${missing.map(p => esc(p.full_name || p.email)).join(', ')}</div>`
-        : '<div class="notice">Everyone has hours entered for this week.</div>';
+        : '<div class="notice">Everyone has hours entered for this week.</div>') +
+        (short.length
+          ? `<div class="notice info"><b>Under ${OT} hours (${short.length}):</b> ${short.map(p =>
+              `${esc(p.full_name || p.email)} (${fmtH(weekTotals[p.id] || 0)} h)`).join(', ')}
+              <span class="small">— just a heads-up, nothing is blocked.</span></div>`
+          : '');
     }
 
     const tbl = v.querySelector('#tbl');
@@ -705,7 +718,7 @@
           const wk = weekTotals[cur] || 0;
           const shown = entries.filter(x => x.employee_id === cur).reduce((s, x) => s + num(x.hours), 0);
           html += `<tr class="group"><td><input type="checkbox" data-group="${cur}" aria-label="Select all for ${esc(personName(cur))}"></td>
-            <td colspan="3">${esc(personName(cur))}</td>
+            <td colspan="3">${esc(personName(cur))}${empNo(cur) ? ` <span class="muted small">#${esc(empNo(cur))}</span>` : ''}</td>
             <td class="num">${fmtH(shown)}</td>
             ${FLAGS.map(f => { const n = flagDays[f.col](cur); return `<td class="flagcol small">${n ? n + ' day' + (n === 1 ? '' : 's') : ''}</td>`; }).join('')}
             <td colspan="3">${R.site || R.status ? `<span class="muted small">week total ${fmtH(wk)} h</span> ` : ''}${wk > OT ? `<span class="badge ot">${fmtH(wk - OT)} h overtime</span>` : ''}</td></tr>`;
@@ -755,10 +768,10 @@
 
     const tag = dates[0];
     v.querySelector('#csvDetail').onclick = () => {
-      const rows = [['Employee', 'Email', 'Date', 'Day', 'Job #', 'Jobsite', 'Cost code', 'Hours', ...FLAGS.map(f => f.label), 'Status', 'Entered by', 'Notes']];
+      const rows = [['Employee', 'Employee #', 'Email', 'Date', 'Day', 'Job #', 'Jobsite', 'Cost code', 'Hours', ...FLAGS.map(f => f.label), 'Status', 'Entered by', 'Notes']];
       for (const e of R.entries) {
         const s = siteById(e.jobsite_id) || {}; const p = profileById(e.employee_id) || {};
-        rows.push([personName(e.employee_id), p.email, e.work_date, DAY_NAMES[parseISO(e.work_date).getDay()],
+        rows.push([personName(e.employee_id), empNo(e.employee_id), p.email, e.work_date, DAY_NAMES[parseISO(e.work_date).getDay()],
           s.job_number, s.name, e.cost_code, num(e.hours), ...FLAGS.map(f => (e[f.col] ? 'Yes' : '')),
           e.status, e.entered_by ? personName(e.entered_by) : '', e.notes]);
       }
@@ -768,7 +781,7 @@
       // One line per employee + jobsite + cost code, with each day as a column,
       // plus each employee's weekly regular / overtime split.
       // Swing-Pay / Gas show as day counts per line and per employee for the week.
-      const head = ['Employee', 'Job #', 'Jobsite', 'Cost code', ...dates.map(d => DAY_NAMES[parseISO(d).getDay()] + ' ' + fmtShort(d)), 'Total',
+      const head = ['Employee', 'Employee #', 'Job #', 'Jobsite', 'Cost code', ...dates.map(d => DAY_NAMES[parseISO(d).getDay()] + ' ' + fmtShort(d)), 'Total',
         ...FLAGS.map(f => f.label + ' days'), 'Employee week total', 'Regular', 'Overtime', ...FLAGS.map(f => 'Employee ' + f.label + ' days')];
       const groups = new Map();
       for (const e of R.entries) {
@@ -785,7 +798,7 @@
         const tot = Object.values(days).reduce((x, y) => x + y, 0);
         const wk = weekTotals[e.employee_id] || 0;
         const first = e.employee_id !== lastEmp; lastEmp = e.employee_id;
-        rows.push([personName(e.employee_id), s.job_number, s.name, e.cost_code, ...dates.map(d => days[d] || ''), fmtH(tot),
+        rows.push([personName(e.employee_id), empNo(e.employee_id), s.job_number, s.name, e.cost_code, ...dates.map(d => days[d] || ''), fmtH(tot),
           ...FLAGS.map(f => flags[f.col].size || ''),
           first ? fmtH(wk) : '', first ? fmtH(Math.min(wk, OT)) : '', first ? fmtH(Math.max(0, wk - OT)) : '',
           ...FLAGS.map(f => (first ? flagDays[f.col](e.employee_id) : ''))]);
@@ -919,6 +932,7 @@
       <form id="addPerson">
         <h2>Add a person</h2>
         <label class="field"><span>Full name</span><input name="full_name" required autocomplete="off"></label>
+        <label class="field"><span>Employee # (optional)</span><input name="employee_number" autocomplete="off" inputmode="text" style="max-width:200px"></label>
         <label class="field"><span>Email / login</span><input name="email" type="email" required autocomplete="off" placeholder="jsmith@mabldg.com">
           <span class="small muted" style="font-weight:400">No email? Make one up in a set format, e.g. jsmith@mabldg-crew.com.</span></label>
         <label class="field"><span>Temporary password</span>
@@ -937,12 +951,19 @@
         f.onsubmit = async e => {
           e.preventDefault();
           const btn = f.querySelector('[type=submit]');
+          const empNumber = f.employee_number.value.trim();
+          const taken = noTaken(empNumber);
+          if (taken) { toast(`Employee # ${empNumber} is already used by ${taken.full_name || taken.email}.`, true); return; }
           btn.disabled = true; btn.textContent = 'Creating…';
           const body = { action: 'create', full_name: f.full_name.value.trim(), email: f.email.value.trim(),
             password: f.password.value, role: f.role.value };
           const r = await manageUsers(body);
           if (r.error) { toast(r.error, true); btn.disabled = false; btn.textContent = 'Create login'; return; }
           close();
+          if (empNumber && r.id) {
+            const { error: ne } = await sb.from('profiles').update({ employee_number: empNumber }).eq('id', r.id);
+            if (ne) toast('Login created, but the employee # didn\'t save: ' + (dupNoMsg(ne, empNumber) || ne.message) + ' Set it on the People tab.', true);
+          }
           try { await loadRefs(); } catch (err) { fail(err); }
           viewPeople(v);
           showLoginDetails('Login created', body.full_name, r.email || body.email, body.password);
@@ -992,11 +1013,12 @@
           Unticking <b>Active</b> blocks someone from the app but keeps their past hours.</p>
       </div>
       <div class="card table-wrap"><table>
-        <thead><tr><th>Name</th><th>Email / login</th><th>Role</th><th>Active</th><th></th></tr></thead>
+        <thead><tr><th>Name</th><th>Employee #</th><th>Email / login</th><th>Role</th><th>Active</th><th></th></tr></thead>
         <tbody>${state.profiles.map(p => {
           const self = p.id === state.me.id;
           return `<tr data-person="${p.id}">
             <td><input data-f="full_name" value="${esc(p.full_name)}" aria-label="Name"></td>
+            <td><input data-f="employee_number" value="${esc(p.employee_number || '')}" aria-label="Employee number" style="width:110px"></td>
             <td class="small">${esc(p.email)}</td>
             <td><select data-f="role" ${self ? 'disabled title="You can\'t change your own role"' : ''} aria-label="Role">
               ${Object.entries(ROLE_LABEL).map(([k, l]) => `<option value="${k}" ${k === p.role ? 'selected' : ''}>${l}</option>`).join('')}</select></td>
@@ -1011,7 +1033,10 @@
     });
     v.querySelectorAll('[data-save]').forEach(b => b.onclick = async () => {
       const tr = b.closest('[data-person]'); const id = tr.dataset.person;
-      const upd = { full_name: tr.querySelector('[data-f="full_name"]').value.trim() };
+      const upd = { full_name: tr.querySelector('[data-f="full_name"]').value.trim(),
+        employee_number: tr.querySelector('[data-f="employee_number"]').value.trim() };
+      const taken = noTaken(upd.employee_number, id);
+      if (taken) { toast(`Employee # ${upd.employee_number} is already used by ${taken.full_name || taken.email}.`, true); return; }
       if (id !== state.me.id) {
         upd.role = tr.querySelector('[data-f="role"]').value;
         upd.active = tr.querySelector('[data-f="active"]').checked;
@@ -1019,7 +1044,7 @@
       b.disabled = true;
       const { error } = await sb.from('profiles').update(upd).eq('id', id);
       b.disabled = false;
-      if (error) return fail(error);
+      if (error) { const m = dupNoMsg(error, upd.employee_number); return m ? toast(m, true) : fail(error); }
       await loadRefs(); toast('Saved.');
       if (id === state.me.id) renderShell();
     });
