@@ -93,7 +93,8 @@
 
   function downloadCSV(filename, rows) {
     const csv = rows.map(r => r.map(v => {
-      const s = String(v == null ? '' : v);
+      let s = String(v == null ? '' : v);
+      if (typeof v === 'string' && (/^[=+@\t\r]/.test(s) || /^-(?!\d)/.test(s))) s = "'" + s;
       return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
     }).join(',')).join('\r\n');
     const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' });
@@ -767,41 +768,77 @@
     v.querySelector('#reject').onclick = () => setStatus('rejected');
 
     const tag = dates[0];
+    // Exports are grouped by job: sorted by job #, then employee, so someone who
+    // worked several jobs in the week appears separately under each job.
+    const jobKey = id => { const s = siteById(id) || {}; return [s.job_number || '', s.name || '']; };
+    const byJob = (a, b) => {
+      const [an, aname] = jobKey(a.jobsite_id), [bn, bname] = jobKey(b.jobsite_id);
+      return an.localeCompare(bn, undefined, { numeric: true }) || aname.localeCompare(bname) ||
+        (a.jobsite_id < b.jobsite_id ? -1 : a.jobsite_id > b.jobsite_id ? 1 : 0);
+    };
+    const byJobThenPerson = (a, b) => byJob(a, b) ||
+      personName(a.employee_id).localeCompare(personName(b.employee_id)) || (a.cost_code || '').localeCompare(b.cost_code || '');
+
     v.querySelector('#csvDetail').onclick = () => {
-      const rows = [['Employee', 'Employee #', 'Email', 'Date', 'Day', 'Job #', 'Jobsite', 'Cost code', 'Hours', ...FLAGS.map(f => f.label), 'Status', 'Entered by', 'Notes']];
-      for (const e of R.entries) {
+      const rows = [['Job #', 'Jobsite', 'Employee', 'Employee #', 'Email', 'Date', 'Day', 'Cost code', 'Hours', ...FLAGS.map(f => f.label), 'Status', 'Entered by', 'Notes']];
+      const sorted = [...R.entries].sort((a, b) => byJobThenPerson(a, b) || a.work_date.localeCompare(b.work_date));
+      for (const e of sorted) {
         const s = siteById(e.jobsite_id) || {}; const p = profileById(e.employee_id) || {};
-        rows.push([personName(e.employee_id), empNo(e.employee_id), p.email, e.work_date, DAY_NAMES[parseISO(e.work_date).getDay()],
-          s.job_number, s.name, e.cost_code, num(e.hours), ...FLAGS.map(f => (e[f.col] ? 'Yes' : '')),
+        rows.push([s.job_number, s.name, personName(e.employee_id), empNo(e.employee_id), p.email, e.work_date, DAY_NAMES[parseISO(e.work_date).getDay()],
+          e.cost_code, num(e.hours), ...FLAGS.map(f => (e[f.col] ? 'Yes' : '')),
           e.status, e.entered_by ? personName(e.entered_by) : '', e.notes]);
       }
       downloadCSV(`timesheets-detail-${tag}.csv`, rows);
     };
+
     v.querySelector('#csvSummary').onclick = () => {
-      // One line per employee + jobsite + cost code, with each day as a column,
-      // plus each employee's weekly regular / overtime split.
-      // Swing-Pay / Gas show as day counts per line and per employee for the week.
-      const head = ['Employee', 'Employee #', 'Job #', 'Jobsite', 'Cost code', ...dates.map(d => DAY_NAMES[parseISO(d).getDay()] + ' ' + fmtShort(d)), 'Total',
-        ...FLAGS.map(f => f.label + ' days'), 'Employee week total', 'Regular', 'Overtime', ...FLAGS.map(f => 'Employee ' + f.label + ' days')];
+      // Section 1 — by job: one line per job + employee + cost code with each day as a
+      // column; a total line and a blank line after each job.
+      // Section 2 — employee weekly totals for payroll (regular / overtime split,
+      // Swing-Pay / Gas days counted once per day across all jobs).
+      const dayCols = dates.map(d => DAY_NAMES[parseISO(d).getDay()] + ' ' + fmtShort(d));
       const groups = new Map();
       for (const e of R.entries) {
-        const k = e.employee_id + '|' + e.jobsite_id + '|' + e.cost_code;
-        if (!groups.has(k)) groups.set(k, { e, days: {}, flags: Object.fromEntries(FLAGS.map(f => [f.col, new Set()])) });
+        const k = e.jobsite_id + '|' + e.employee_id + '|' + e.cost_code;
+        if (!groups.has(k)) groups.set(k, { e, days: {}, notes: new Set(), flags: Object.fromEntries(FLAGS.map(f => [f.col, new Set()])) });
         const gg = groups.get(k); gg.days[e.work_date] = (gg.days[e.work_date] || 0) + num(e.hours);
+        if ((e.notes || '').trim()) gg.notes.add(e.notes.trim());
         FLAGS.forEach(f => { if (e[f.col]) gg.flags[f.col].add(e.work_date); });
       }
-      const rows = [head];
-      const lines = [...groups.values()].sort((a, b) => personName(a.e.employee_id).localeCompare(personName(b.e.employee_id)));
-      let lastEmp = null;
-      for (const { e, days, flags } of lines) {
-        const s = siteById(e.jobsite_id) || {};
-        const tot = Object.values(days).reduce((x, y) => x + y, 0);
-        const wk = weekTotals[e.employee_id] || 0;
-        const first = e.employee_id !== lastEmp; lastEmp = e.employee_id;
-        rows.push([personName(e.employee_id), empNo(e.employee_id), s.job_number, s.name, e.cost_code, ...dates.map(d => days[d] || ''), fmtH(tot),
-          ...FLAGS.map(f => flags[f.col].size || ''),
-          first ? fmtH(wk) : '', first ? fmtH(Math.min(wk, OT)) : '', first ? fmtH(Math.max(0, wk - OT)) : '',
-          ...FLAGS.map(f => (first ? flagDays[f.col](e.employee_id) : ''))]);
+      const lines = [...groups.values()].sort((a, b) => byJobThenPerson(a.e, b.e));
+
+      const rows = [['Job #', 'Jobsite', 'Employee', 'Employee #', 'Cost code', ...dayCols, 'Total', ...FLAGS.map(f => f.label + ' days'), 'Notes']];
+      let i = 0;
+      while (i < lines.length) {
+        const site = lines[i].e.jobsite_id;
+        const s = siteById(site) || {};
+        const jobDays = {}; const jobFlags = Object.fromEntries(FLAGS.map(f => [f.col, 0]));
+        let jobTotal = 0;
+        for (; i < lines.length && lines[i].e.jobsite_id === site; i++) {
+          const { e, days, flags, notes } = lines[i];
+          const tot = Object.values(days).reduce((x, y) => x + y, 0);
+          jobTotal += tot;
+          dates.forEach(d => { if (days[d]) jobDays[d] = (jobDays[d] || 0) + days[d]; });
+          FLAGS.forEach(f => { jobFlags[f.col] += flags[f.col].size; });
+          rows.push([s.job_number, s.name, personName(e.employee_id), empNo(e.employee_id), e.cost_code,
+            ...dates.map(d => (days[d] ? fmtH(days[d]) : '')), fmtH(tot), ...FLAGS.map(f => flags[f.col].size || ''),
+            [...notes].join(' | ')]);
+        }
+        rows.push([s.job_number, `${s.name || ''} — JOB TOTAL`, '', '', '',
+          ...dates.map(d => (jobDays[d] ? fmtH(jobDays[d]) : '')), fmtH(jobTotal), ...FLAGS.map(f => jobFlags[f.col] || ''), '']);
+        rows.push([]);
+      }
+
+      rows.push(['EMPLOYEE WEEKLY TOTALS']);
+      rows.push(['Employee', 'Employee #', 'Week total', 'Regular', 'Overtime', ...FLAGS.map(f => f.label + ' days'), 'Jobs worked']);
+      const people = [...new Set(R.entries.map(e => e.employee_id))].sort((a, b) => personName(a).localeCompare(personName(b)));
+      for (const id of people) {
+        const wk = weekTotals[id] || 0;
+        const jobs = [...new Set(R.entries.filter(e => e.employee_id === id).map(e => e.jobsite_id))]
+          .map(j => ({ jobsite_id: j })).sort(byJob)
+          .map(({ jobsite_id: j }) => (siteById(j) || {}).job_number || (siteById(j) || {}).name || '').join(' / ');
+        rows.push([personName(id), empNo(id), fmtH(wk), fmtH(Math.min(wk, OT)), fmtH(Math.max(0, wk - OT)),
+          ...FLAGS.map(f => flagDays[f.col](id)), jobs]);
       }
       downloadCSV(`timesheets-summary-${tag}.csv`, rows);
     };
